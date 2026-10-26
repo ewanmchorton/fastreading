@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="ru" data-theme="night" data-size="M" data-font="literata">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Fast Reading</title>
+<meta name="description" content="Читалка: слова по одному в центре экрана или обычная страница">
+<meta name="theme-color" content="#0B0B0D">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Fast Reading">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icons/icon-180.png">
+<link rel="stylesheet" href="fonts/fonts.css">
+<link rel="stylesheet" href="css/app.css">
+<script type="module" src="js/app.js"></script>
+</head>
+<body>
+
+<!-- Library -->
+<main id="library" class="screen library">
+  <header class="bar">
+    <h1 class="wordmark">fast r<span class="accent">e</span>ading</h1>
+    <div class="bar-actions">
+      <button class="icon-btn" id="theme-quick" aria-label="Сменить тему">
+        <svg class="only-night" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.5 1.5M17.5 17.5L19 19M5 19l1.5-1.5M17.5 6.5L19 5"/></svg>
+        <svg class="only-day" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/></svg>
+      </button>
+      <button class="icon-btn" data-open-settings aria-label="Настройки">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <section id="continue" class="continue" hidden></section>
+
+  <section class="shelf">
+    <h2 class="label" id="shelf-label" hidden>Библиотека</h2>
+    <ul id="books" class="books"></ul>
+    <div id="empty" class="empty" hidden>
+      <p class="empty-title">Здесь будут твои книги</p>
+      <p>Подойдут EPUB, FB2, PDF и TXT. Книги из Apple Books и других магазинов с защитой (DRM) открыть не получится, только свои файлы без защиты.</p>
+    </div>
+  </section>
+
+  <label class="add-book">
+    <input type="file" id="file-input" multiple hidden>
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+    <span>Добавить книгу</span>
+    <span class="add-hint">EPUB · FB2 · PDF · TXT</span>
+  </label>
+</main>
+
+<!-- Reader -->
+<div id="reader" class="screen reader" hidden>
+
+  <!-- Page mode: the text as a page; this is also the pause state of the flow -->
+  <div id="page" class="page">
+    <header class="bar">
+      <button class="icon-btn" id="back" aria-label="В библиотеку">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>
+      </button>
+      <button class="chapter-btn" id="chapter-btn">
+        <span id="chapter-title"></span>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+      </button>
+      <button class="icon-btn" data-open-settings aria-label="Настройки">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg>
+      </button>
+    </header>
+
+    <article id="text" class="text"></article>
+
+    <footer class="panel">
+      <div class="speed">
+        <div class="speed-head">
+          <label for="speed">Скорость потока</label>
+          <span><b id="speed-value">300</b> сл/мин</span>
+        </div>
+        <input type="range" id="speed" min="100" max="1000" step="25" value="300">
+      </div>
+      <div class="controls">
+        <button class="round" id="prev" aria-label="Предыдущее предложение">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 6l-6 6 6 6M19 6l-6 6 6 6"/></svg>
+        </button>
+        <button class="round play" id="play" aria-label="Запустить поток">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
+        </button>
+        <button class="round" id="next" aria-label="Следующее предложение">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 6l6 6-6 6M5 6l6 6-6 6"/></svg>
+        </button>
+      </div>
+      <div class="progress">
+        <div class="track"><div class="fill" id="page-fill"></div></div>
+        <div class="progress-meta"><span id="page-pct">0%</span><span>тап по слову — начать с него</span><span id="page-left"></span></div>
+      </div>
+    </footer>
+  </div>
+
+  <!-- Flow mode: one word at a time -->
+  <div id="flow" class="flow" hidden>
+    <div class="flow-top" id="flow-chapter"></div>
+    <div class="frame" id="frame">
+      <div class="rule"></div>
+      <div class="tick"></div>
+      <div class="word" id="word"><span id="w-left"></span><span id="w-focus" class="accent"></span><span id="w-right"></span></div>
+      <div class="tick"></div>
+      <div class="rule"></div>
+    </div>
+    <div class="progress flow-progress">
+      <div class="track"><div class="fill" id="flow-fill"></div></div>
+      <div class="progress-meta"><span id="flow-pct">0%</span><span>тап — пауза</span><span id="flow-left"></span></div>
+    </div>
+  </div>
+</div>
+
+<!-- Bottom sheets -->
+<div id="backdrop" class="backdrop" hidden></div>
+
+<section id="settings" class="sheet" hidden aria-label="Настройки">
+  <div class="grabber"></div>
+  <div class="sheet-head">
+    <h2>Настройки</h2>
+    <button class="icon-btn" data-close-sheet aria-label="Закрыть">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+    </button>
+  </div>
+
+  <div class="field">
+    <div class="field-label">Тема</div>
+    <div class="seg seg-2" data-setting="theme">
+      <button data-value="day">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.5 1.5M17.5 17.5L19 19M5 19l1.5-1.5M17.5 6.5L19 5"/></svg>
+        День
+      </button>
+      <button data-value="night">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/></svg>
+        Ночь
+      </button>
+    </div>
+  </div>
+
+  <div class="field">
+    <div class="field-label">Размер текста</div>
+    <div class="seg seg-3 sizes" data-setting="size">
+      <button data-value="S" aria-label="Маленький">Аа</button>
+      <button data-value="M" aria-label="Средний">Аа</button>
+      <button data-value="L" aria-label="Большой">Аа</button>
+    </div>
+  </div>
+
+  <div class="field">
+    <div class="field-label">Шрифт</div>
+    <div class="fonts" data-setting="font">
+      <button data-value="literata"><span class="sample serif">сл<span class="accent">о</span>во</span><span class="font-name">Literata · с засечками</span></button>
+      <button data-value="inter"><span class="sample sans">сл<span class="accent">о</span>во</span><span class="font-name">Inter · без засечек</span></button>
+    </div>
+  </div>
+
+  <div class="toggles">
+    <div class="toggle-row">
+      <div><div class="toggle-title" id="t-punct">Паузы на знаках препинания</div><div class="toggle-sub">Чуть дольше на запятых и точках</div></div>
+      <button class="switch" role="switch" data-toggle="punct" aria-labelledby="t-punct"><span></span></button>
+    </div>
+    <div class="toggle-row">
+      <div><div class="toggle-title" id="t-ramp">Плавный разгон</div><div class="toggle-sub">Первые 5 секунд медленнее</div></div>
+      <button class="switch" role="switch" data-toggle="ramp" aria-labelledby="t-ramp"><span></span></button>
+    </div>
+    <div class="toggle-row">
+      <div><div class="toggle-title" id="t-breaks">Перерыв каждые 20 минут</div><div class="toggle-sub">Поток встанет на паузу, чтобы глаза отдохнули</div></div>
+      <button class="switch" role="switch" data-toggle="breaks" aria-labelledby="t-breaks"><span></span></button>
+    </div>
+  </div>
+</section>
+
+<section id="chapters" class="sheet chapters-sheet" hidden aria-label="Оглавление">
+  <div class="grabber"></div>
+  <div class="sheet-head">
+    <h2>Оглавление</h2>
+    <button class="icon-btn" data-close-sheet aria-label="Закрыть">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+    </button>
+  </div>
+  <ol id="chapter-list" class="chapter-list"></ol>
+</section>
+
+<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+</body>
+</html>
