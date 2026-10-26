@@ -43,13 +43,17 @@ export async function readZip(buffer) {
     return new Uint8Array(await new Response(stream).arrayBuffer());
   }
 
-  return {
-    names: [...entries.keys()],
-    has: (name) => entries.has(name),
-    read,
+  // A view of the archive as if `prefix` were its root: macOS and iOS zip an
+  // EPUB "package" as a folder, so the book sits inside "Name.epub/".
+  const scoped = (prefix) => ({
+    names: [...entries.keys()].filter((n) => n.startsWith(prefix)).map((n) => n.slice(prefix.length)),
+    has: (name) => entries.has(prefix + name),
+    read: (name) => read(prefix + name),
     async text(name) {
-      const data = await read(name);
+      const data = await read(prefix + name);
       return data ? utf8.decode(data) : null;
     },
-  };
+    folder: (sub) => scoped(prefix + sub),
+  });
+  return scoped('');
 }
