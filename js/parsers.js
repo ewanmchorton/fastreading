@@ -15,12 +15,12 @@ export async function parseBook(file) {
   const name = file.name;
   const lower = name.toLowerCase();
   const buffer = await file.arrayBuffer();
-  const baseTitle = name.replace(/\.(fb2\.zip|epub|fb2|pdf|txt|zip)$/i, '');
+  const baseTitle = name.replace(/\.(fb2\.zip|epub\.zip|epub|fb2|pdf|txt|zip)$/i, '');
   let book;
 
-  if (lower.endsWith('.epub')) book = await parseEpub(buffer);
+  if (lower.endsWith('.epub')) book = await parseZip(buffer);
   else if (lower.endsWith('.fb2')) book = parseFb2(buffer);
-  else if (lower.endsWith('.zip')) book = await parseZippedFb2(buffer);
+  else if (lower.endsWith('.zip')) book = await parseZip(buffer);
   else if (lower.endsWith('.pdf')) book = await parsePdf(buffer);
   else if (lower.endsWith('.txt')) book = parseTxt(buffer);
   else throw new Error('Этот формат не поддерживается. Подойдут EPUB, FB2, PDF и TXT');
@@ -93,8 +93,8 @@ function resolvePath(base, href) {
 
 /* ---------- EPUB ---------- */
 
-async function parseEpub(buffer) {
-  const zip = await readZip(buffer);
+async function parseEpub(source) {
+  const zip = source instanceof ArrayBuffer ? await readZip(source) : source;
   const container = await zip.text('META-INF/container.xml');
   if (!container) throw new Error('Это не похоже на EPUB');
   const opfPath = parseXml(container).getElementsByTagNameNS('*', 'rootfile')[0]?.getAttribute('full-path');
@@ -216,15 +216,20 @@ function parseFb2(buffer) {
   return { title: clean(title), author, format: 'FB2', paras, chapters };
 }
 
-async function parseZippedFb2(buffer) {
+// A .zip can hold an FB2, an EPUB file, or an EPUB package folder ("Book.epub/…",
+// which is how macOS and iOS share EPUBs from Apple Books).
+async function parseZip(buffer) {
   const zip = await readZip(buffer);
-  const name = zip.names.find((n) => n.toLowerCase().endsWith('.fb2'));
-  if (!name) {
-    if (zip.has('META-INF/container.xml')) return parseEpub(buffer);
-    throw new Error('В архиве нет книги FB2');
-  }
-  const data = await zip.read(name);
-  return parseFb2(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength));
+  if (zip.has('META-INF/container.xml')) return parseEpub(zip);
+  const names = zip.names.filter((n) => !n.startsWith('__MACOSX/'));
+  const container = names.find((n) => n.endsWith('/META-INF/container.xml'));
+  if (container) return parseEpub(zip.folder(container.slice(0, -'META-INF/container.xml'.length)));
+  const toBuffer = (d) => d.buffer.slice(d.byteOffset, d.byteOffset + d.byteLength);
+  const epub = names.find((n) => n.toLowerCase().endsWith('.epub'));
+  if (epub) return parseEpub(toBuffer(await zip.read(epub)));
+  const fb2 = names.find((n) => n.toLowerCase().endsWith('.fb2'));
+  if (fb2) return parseFb2(toBuffer(await zip.read(fb2)));
+  throw new Error('В архиве не нашлось книги EPUB или FB2');
 }
 
 /* ---------- TXT ---------- */
