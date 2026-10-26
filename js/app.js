@@ -33,7 +33,10 @@ function applySettings() {
   $('speed').value = settings.wpm;
   $('speed-value').textContent = settings.wpm;
   baseWordSize = 0;
-  if (reader) updateProgress();
+  if (reader) {
+    updateProgress();
+    relayout();
+  }
 }
 
 /* ---------- Helpers ---------- */
@@ -210,6 +213,7 @@ async function openBook(id) {
 
   $('library').hidden = true;
   $('reader').hidden = false;
+  await document.fonts?.ready;
   showPage();
   history.pushState({ reader: true }, '');
 }
@@ -235,14 +239,13 @@ function schedulePersist() {
   saveTimer = setTimeout(persistPos, 1500);
 }
 
-/* Page view */
+/* Page view: the text laid out in CSS columns, one column per screen, turned by swipes */
 
 function renderSection(k) {
   const { sections, paraStart, words, chapters } = reader;
   const s = sections[k];
   reader.section = k;
   let html = '';
-  if (k > 0) html += `<button class="nav-part" data-section="${k - 1}">↑ Назад: ${escapeHtml(chapters[sections[k - 1].chapter].title)}</button>`;
   for (let p = s.start; p < s.end; p++) {
     const from = paraStart[p];
     const to = p + 1 < paraStart.length ? paraStart[p + 1] : words.length;
@@ -250,33 +253,108 @@ function renderSection(k) {
     for (let i = from; i < to; i++) line += `<span data-i="${i}">${escapeHtml(words[i])}</span> `;
     html += `<p>${line}</p>`;
   }
-  if (k + 1 < sections.length) html += `<button class="nav-part" data-section="${k + 1}">Дальше: ${escapeHtml(chapters[sections[k + 1].chapter].title)} ↓</button>`;
-  $('text').innerHTML = html;
+  $('pages').innerHTML = html;
+  reader.spans = $('pages').querySelectorAll('[data-i]');
   $('chapter-title').textContent = chapters[s.chapter].title;
+  $('page-head').textContent = chapters[s.chapter].title;
+  layoutPages();
 }
 
-function highlight(scroll) {
-  const text = $('text');
-  text.querySelector('.cur')?.classList.remove('cur');
-  const el = text.querySelector(`[data-i="${reader.meta.pos}"]`);
-  if (!el) return;
-  el.classList.add('cur');
-  if (scroll) el.scrollIntoView({ block: 'center' });
+function layoutPages() {
+  const box = $('text');
+  const pages = $('pages');
+  const width = box.clientWidth;
+  const col = Math.min(width - 48, 640);
+  const side = (width - col) / 2;
+  reader.pageW = width;
+  pages.style.width = `${col}px`;
+  pages.style.height = `${box.clientHeight - 24}px`;
+  pages.style.marginLeft = `${side}px`;
+  pages.style.columnWidth = `${col}px`;
+  pages.style.columnGap = `${side * 2}px`;
+  const spans = reader.spans;
+  reader.pageCount = spans.length ? pageOfSpan(spans[spans.length - 1]) + 1 : 1;
 }
 
-function setPos(i, { scroll = true } = {}) {
+function pageOfSpan(el) {
+  const base = $('pages').getBoundingClientRect().left;
+  return Math.max(0, Math.floor((el.getBoundingClientRect().left - base + 1) / reader.pageW));
+}
+
+// First word on page n (binary search: words go left to right, page by page).
+function firstWordOnPage(n) {
+  const spans = reader.spans;
+  let lo = 0;
+  let hi = spans.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (pageOfSpan(spans[mid]) < n) lo = mid + 1; else hi = mid;
+  }
+  return Number(spans[lo].dataset.i);
+}
+
+function showPageNo(n, animate = true) {
+  reader.page = n;
+  const pages = $('pages');
+  pages.style.transition = animate ? '' : 'none';
+  pages.style.transform = `translateX(${-n * reader.pageW}px)`;
+  $('page-no').textContent = `${n + 1} / ${reader.pageCount}`;
+}
+
+// Turn the page; past the first or last page, the previous or next part of the book loads.
+function turnPage(dir) {
+  let n = reader.page + dir;
+  if (n < 0) {
+    if (reader.section === 0) return showPageNo(0);
+    renderSection(reader.section - 1);
+    n = reader.pageCount - 1;
+    showPageNo(n, false);
+  } else if (n >= reader.pageCount) {
+    if (reader.section === reader.sections.length - 1) return showPageNo(reader.page);
+    renderSection(reader.section + 1);
+    n = 0;
+    showPageNo(n, false);
+  } else {
+    showPageNo(n);
+  }
+  setPos(firstWordOnPage(n), { turn: false });
+}
+
+function highlight() {
+  $('pages').querySelector('.cur')?.classList.remove('cur');
+  reader.spans[reader.meta.pos - reader.paraStart[reader.sections[reader.section].start]]?.classList.add('cur');
+}
+
+// Moves the reading position; with `turn`, also turns to the page that holds it.
+function setPos(i, { turn = true } = {}) {
   i = Math.max(0, Math.min(i, reader.words.length - 1));
   reader.meta.pos = i;
   const k = sectionOf(i);
   if (k !== reader.section) renderSection(k);
-  highlight(scroll);
+  highlight();
+  if (turn) showPageNo(pageOfSpan($('pages').querySelector('.cur')), false);
   updateProgress();
   schedulePersist();
+}
+
+// Full-screen text: the bars hide while leafing through pages, a tap brings them back.
+function setImmersive(on) {
+  if ($('reader').classList.contains('immersive') === on) return;
+  $('reader').classList.toggle('immersive', on);
+  layoutPages();
+  showPageNo(pageOfSpan($('pages').querySelector('.cur')), false);
+}
+
+function relayout() {
+  if (!reader || playing) return;
+  layoutPages();
+  showPageNo(pageOfSpan($('pages').querySelector('.cur')), false);
 }
 
 function showPage() {
   $('flow').hidden = true;
   $('page').hidden = false;
+  $('reader').classList.remove('immersive');
   reader.section = -1;
   setPos(reader.meta.pos);
 }
@@ -289,32 +367,66 @@ function updateProgress() {
   $('page-pct').textContent = pct;
   $('page-fill').style.width = width;
   $('page-left').textContent = left;
+  $('page-foot-pct').textContent = pct;
   $('flow-pct').textContent = pct;
   $('flow-fill').style.width = width;
   $('flow-left').textContent = formatLeft(total - pos);
 }
 
-// When the highlighted word scrolls out of sight, the reading position follows the scroll.
-function onTextScroll() {
-  if (playing || !reader) return;
-  clearTimeout(onTextScroll.t);
-  onTextScroll.t = setTimeout(() => {
-    const text = $('text');
-    const box = text.getBoundingClientRect();
-    const cur = text.querySelector('.cur');
-    if (cur) {
-      const r = cur.getBoundingClientRect();
-      if (r.bottom > box.top && r.top < box.bottom) return;
+/* Gestures on the page: swipe turns, tap shows the bars or picks a word, long press starts the flow */
+
+const gesture = { id: null, x: 0, y: 0, dx: 0, drag: false, long: false, timer: 0, word: null };
+
+function onPointerDown(e) {
+  if (gesture.id !== null || !reader) return;
+  Object.assign(gesture, { id: e.pointerId, x: e.clientX, y: e.clientY, dx: 0, drag: false, long: false });
+  gesture.word = e.target.closest('[data-i]');
+  $('text').setPointerCapture(e.pointerId);
+  clearTimeout(gesture.timer);
+  if (gesture.word) {
+    gesture.timer = setTimeout(() => {
+      gesture.long = true;
+      setPos(Number(gesture.word.dataset.i), { turn: false });
+      play();
+    }, 550);
+  }
+}
+
+function onPointerMove(e) {
+  if (e.pointerId !== gesture.id) return;
+  const dx = e.clientX - gesture.x;
+  const dy = e.clientY - gesture.y;
+  if (Math.abs(dx) > 8 || Math.abs(dy) > 8) clearTimeout(gesture.timer);
+  if (!gesture.drag && Math.abs(dx) > 12 && Math.abs(dx) > Math.abs(dy)) gesture.drag = true;
+  if (gesture.drag) {
+    gesture.dx = dx;
+    const pages = $('pages');
+    pages.style.transition = 'none';
+    pages.style.transform = `translateX(${-reader.page * reader.pageW + dx}px)`;
+  }
+}
+
+function onPointerUp(e) {
+  if (e.pointerId !== gesture.id) return;
+  gesture.id = null;
+  clearTimeout(gesture.timer);
+  if (gesture.long || e.type === 'pointercancel') {
+    if (reader && !playing) showPageNo(reader.page);
+    return;
+  }
+  if (gesture.drag) {
+    if (Math.abs(gesture.dx) > 50) {
+      const dir = gesture.dx < 0 ? 1 : -1;
+      setImmersive(true);
+      turnPage(dir);
+    } else {
+      showPageNo(reader.page);
     }
-    for (const p of text.querySelectorAll('p')) {
-      const r = p.getBoundingClientRect();
-      if (r.bottom > box.top + 8) {
-        const first = [...p.querySelectorAll('[data-i]')].find((s) => s.getBoundingClientRect().top >= box.top);
-        if (first) setPos(Number(first.dataset.i), { scroll: false });
-        return;
-      }
-    }
-  }, 250);
+    return;
+  }
+  // A tap.
+  if ($('reader').classList.contains('immersive')) setImmersive(false);
+  else if (gesture.word) setPos(Number(gesture.word.dataset.i), { turn: false });
 }
 
 function sentenceStart(i) {
@@ -442,21 +554,15 @@ function renderChapters() {
 /* ---------- Events ---------- */
 
 document.addEventListener('click', (e) => {
-  const t = e.target.closest('button, [data-i]');
+  const t = e.target.closest('button');
   if (!t) return;
   if (t.dataset.open) openBook(t.dataset.open);
   else if (t.dataset.delete) deleteBook(t.dataset.delete);
   else if (t.hasAttribute('data-open-settings')) openSheet('settings');
   else if (t.hasAttribute('data-close-sheet')) closeSheets();
-  else if (t.dataset.i !== undefined) setPos(Number(t.dataset.i), { scroll: false });
-  else if (t.dataset.section !== undefined) {
-    const s = reader.sections[Number(t.dataset.section)];
-    setPos(reader.paraStart[s.start]);
-    $('text').scrollTop = 0;
-  } else if (t.dataset.chapter !== undefined) {
+  else if (t.dataset.chapter !== undefined) {
     closeSheets();
     setPos(reader.paraStart[reader.chapters[Number(t.dataset.chapter)].para]);
-    $('text').scrollTop = 0;
   } else if (t.dataset.value !== undefined) {
     const key = t.closest('[data-setting]').dataset.setting;
     settings[key] = t.dataset.value;
@@ -492,8 +598,14 @@ $('chapter-btn').addEventListener('click', () => openSheet('chapters'));
 $('play').addEventListener('click', play);
 $('prev').addEventListener('click', prevSentence);
 $('next').addEventListener('click', nextSentence);
-$('flow').addEventListener('click', pause);
-$('text').addEventListener('scroll', onTextScroll, { passive: true });
+// The click that ends a long press can land on the flow screen: ignore it.
+$('flow').addEventListener('click', () => { if (performance.now() - playStartedAt > 400) pause(); });
+$('text').addEventListener('pointerdown', onPointerDown);
+$('text').addEventListener('pointermove', onPointerMove);
+$('text').addEventListener('pointerup', onPointerUp);
+$('text').addEventListener('pointercancel', onPointerUp);
+$('text').addEventListener('contextmenu', (e) => e.preventDefault());
+window.addEventListener('resize', relayout);
 $('speed').addEventListener('input', (e) => {
   settings.wpm = Number(e.target.value);
   $('speed-value').textContent = settings.wpm;
@@ -522,8 +634,8 @@ document.addEventListener('keydown', (e) => {
     e.preventDefault();
     if (playing) pause(); else play();
   } else if (e.key === 'Escape') pause();
-  else if (!playing && e.key === 'ArrowLeft') prevSentence();
-  else if (!playing && e.key === 'ArrowRight') nextSentence();
+  else if (!playing && e.key === 'ArrowLeft') { setImmersive(true); turnPage(-1); }
+  else if (!playing && e.key === 'ArrowRight') { setImmersive(true); turnPage(1); }
 });
 
 /* ---------- Start ---------- */
