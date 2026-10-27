@@ -42,7 +42,3 @@ export function wordWeight(word, endsParagraph, punctuationPauses) {
   if (/[,;:—–]["»”)\]]*$/.test(word) || / [—–]$/.test(word)) return w + 0.5;
   return w;
 }
-
-export function isSentenceEnd(word) {
-  return /[.!?…]["»”)\]]*$/.test(word);
-}

@@ -1,6 +1,6 @@
 // Offline support: online, files always come from the network (so an update shows up
 // right away and old and new files never mix); offline, from the cache.
-const VERSION = 'fr-v2';
+const VERSION = 'fr-v3';
 const SHELL = [
   './',
   'index.html',
