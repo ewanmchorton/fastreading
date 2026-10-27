@@ -5,10 +5,11 @@ import * as db from './db.js';
 const $ = (id) => document.getElementById(id);
 const SECTION_WORDS = 2500; // how many words the page view renders at once
 const BREAK_AFTER_MS = 20 * 60 * 1000;
+const CHAPTER_PAUSE_MS = 1500; // extra pause before a chapter starts, and after its title
 
 /* ---------- Settings ---------- */
 
-const DEFAULTS = { theme: 'night', size: 'M', font: 'literata', wpm: 300, punct: true, ramp: true, breaks: true };
+const DEFAULTS = { theme: 'night', size: 'M', font: 'literata', layout: 'pages', wpm: 300, punct: true, ramp: true, breaks: true };
 let settings = { ...DEFAULTS };
 try { Object.assign(settings, JSON.parse(localStorage.getItem('fr-settings') || '{}')); } catch { /* private mode */ }
 
@@ -203,7 +204,15 @@ async function openBook(id) {
   const { words, paraStart } = tokenize(content.paras);
   const paraMark = new Uint8Array(words.length + 1);
   for (const s of paraStart) paraMark[s] = 1;
-  reader = { meta, chapters: content.chapters, words, paraStart, paraMark, section: -1 };
+  // 1: a chapter starts at this word; 2: a short chapter title ends right before it.
+  const chapterMark = new Uint8Array(words.length + 1);
+  for (const c of content.chapters) {
+    const at = paraStart[c.para];
+    if (at > 0) chapterMark[at] = 1;
+    const next = paraStart[c.para + 1];
+    if (next !== undefined && next - at <= 8 && !chapterMark[next]) chapterMark[next] = 2;
+  }
+  reader = { meta, chapters: content.chapters, words, paraStart, paraMark, chapterMark, section: -1 };
   meta.total = words.length;
   meta.pos = Math.min(meta.pos || 0, words.length - 1);
   meta.openedAt = Date.now();
@@ -225,7 +234,7 @@ function closeBook() {
   reader = null;
   $('reader').hidden = true;
   $('library').hidden = false;
-  $('text').innerHTML = '';
+  $('pages').innerHTML = '';
   renderLibrary();
 }
 
@@ -239,7 +248,10 @@ function schedulePersist() {
   saveTimer = setTimeout(persistPos, 1500);
 }
 
-/* Page view: the text laid out in CSS columns, one column per screen, turned by swipes */
+/* Page view. Two layouts: "pages" puts the text in CSS columns, one column per screen,
+   turned by swipes; "scroll" is a plain scrolling column. */
+
+const scrollMode = () => settings.layout === 'scroll';
 
 function renderSection(k) {
   const { sections, paraStart, words, chapters } = reader;
@@ -253,6 +265,11 @@ function renderSection(k) {
     for (let i = from; i < to; i++) line += `<span data-i="${i}">${escapeHtml(words[i])}</span> `;
     html += `<p>${line}</p>`;
   }
+  if (scrollMode()) {
+    const title = (j) => escapeHtml(chapters[sections[j].chapter].title);
+    if (k > 0) html = `<button class="nav-part" data-section="${k - 1}">↑ Назад: ${title(k - 1)}</button>` + html;
+    if (k + 1 < sections.length) html += `<button class="nav-part" data-section="${k + 1}">Дальше: ${title(k + 1)} ↓</button>`;
+  }
   $('pages').innerHTML = html;
   reader.spans = $('pages').querySelectorAll('[data-i]');
   $('chapter-title').textContent = chapters[s.chapter].title;
@@ -263,6 +280,14 @@ function renderSection(k) {
 function layoutPages() {
   const box = $('text');
   const pages = $('pages');
+  box.classList.toggle('scroll', scrollMode());
+  if (scrollMode()) {
+    for (const prop of ['width', 'height', 'marginLeft', 'columnWidth', 'columnGap', 'transform', 'transition']) pages.style[prop] = '';
+    reader.pageW = box.clientWidth;
+    reader.pageCount = 1;
+    $('page-no').textContent = '';
+    return;
+  }
   const width = box.clientWidth;
   const col = Math.min(width - 48, 640);
   const side = (width - col) / 2;
@@ -295,6 +320,7 @@ function firstWordOnPage(n) {
 
 function showPageNo(n, animate = true) {
   reader.page = n;
+  if (scrollMode()) return;
   const pages = $('pages');
   pages.style.transition = animate ? '' : 'none';
   pages.style.transform = `translateX(${-n * reader.pageW}px)`;
@@ -332,23 +358,54 @@ function setPos(i, { turn = true } = {}) {
   const k = sectionOf(i);
   if (k !== reader.section) renderSection(k);
   highlight();
-  if (turn) showPageNo(pageOfSpan($('pages').querySelector('.cur')), false);
+  if (turn) showCurrent();
   updateProgress();
   schedulePersist();
 }
 
-// Full-screen text: the bars hide while leafing through pages, a tap brings them back.
+// Brings the current word into view: its page, or the middle of the screen when scrolling.
+function showCurrent() {
+  const cur = $('pages').querySelector('.cur');
+  if (!cur) return;
+  if (scrollMode()) {
+    reader.ignoreScrollUntil = performance.now() + 300;
+    cur.scrollIntoView({ block: 'center' });
+  } else {
+    showPageNo(pageOfSpan(cur), false);
+  }
+}
+
+// Full-screen text: the bars hide while leafing or scrolling, a tap brings them back.
 function setImmersive(on) {
   if ($('reader').classList.contains('immersive') === on) return;
   $('reader').classList.toggle('immersive', on);
+  if (scrollMode()) return;
   layoutPages();
-  showPageNo(pageOfSpan($('pages').querySelector('.cur')), false);
+  showCurrent();
 }
 
 function relayout() {
-  if (!reader || playing) return;
-  layoutPages();
-  showPageNo(pageOfSpan($('pages').querySelector('.cur')), false);
+  if (!reader || playing || $('page').hidden) return;
+  reader.section = -1;
+  setPos(reader.meta.pos);
+}
+
+// In scroll mode, scrolling hides the bars, and once the highlighted word leaves
+// the screen the reading position follows the first visible line.
+function onTextScroll() {
+  if (!reader || playing || !scrollMode() || performance.now() < (reader.ignoreScrollUntil || 0)) return;
+  setImmersive(true);
+  clearTimeout(onTextScroll.t);
+  onTextScroll.t = setTimeout(() => {
+    const box = $('text').getBoundingClientRect();
+    const cur = $('pages').querySelector('.cur');
+    if (cur) {
+      const r = cur.getBoundingClientRect();
+      if (r.bottom > box.top && r.top < box.bottom) return;
+    }
+    const first = [...reader.spans].find((el) => el.getBoundingClientRect().top >= box.top);
+    if (first) setPos(Number(first.dataset.i), { turn: false });
+  }, 250);
 }
 
 function showPage() {
@@ -375,13 +432,14 @@ function updateProgress() {
 
 /* Gestures on the page: swipe turns, tap shows the bars or picks a word, long press starts the flow */
 
-const gesture = { id: null, x: 0, y: 0, dx: 0, drag: false, long: false, timer: 0, word: null };
+const gesture = { id: null, x: 0, y: 0, dx: 0, drag: false, long: false, timer: 0, word: null, nav: null };
 
 function onPointerDown(e) {
   if (gesture.id !== null || !reader) return;
   Object.assign(gesture, { id: e.pointerId, x: e.clientX, y: e.clientY, dx: 0, drag: false, long: false });
   gesture.word = e.target.closest('[data-i]');
-  $('text').setPointerCapture(e.pointerId);
+  gesture.nav = e.target.closest('[data-section]');
+  if (!scrollMode()) $('text').setPointerCapture(e.pointerId);
   clearTimeout(gesture.timer);
   if (gesture.word) {
     gesture.timer = setTimeout(() => {
@@ -397,7 +455,7 @@ function onPointerMove(e) {
   const dx = e.clientX - gesture.x;
   const dy = e.clientY - gesture.y;
   if (Math.abs(dx) > 8 || Math.abs(dy) > 8) clearTimeout(gesture.timer);
-  if (!gesture.drag && Math.abs(dx) > 12 && Math.abs(dx) > Math.abs(dy)) gesture.drag = true;
+  if (!gesture.drag && !scrollMode() && Math.abs(dx) > 12 && Math.abs(dx) > Math.abs(dy)) gesture.drag = true;
   if (gesture.drag) {
     gesture.dx = dx;
     const pages = $('pages');
@@ -424,9 +482,19 @@ function onPointerUp(e) {
     }
     return;
   }
-  // A tap.
-  if ($('reader').classList.contains('immersive')) setImmersive(false);
-  else if (gesture.word) setPos(Number(gesture.word.dataset.i), { turn: false });
+  // A tap. In full screen, the side edges of a page turn it and the middle brings the bars back.
+  if (gesture.nav) {
+    const s = reader.sections[Number(gesture.nav.dataset.section)];
+    setPos(reader.paraStart[s.start]);
+    $('text').scrollTop = 0;
+  } else if ($('reader').classList.contains('immersive')) {
+    const x = e.clientX / window.innerWidth;
+    if (!scrollMode() && x < 0.25) turnPage(-1);
+    else if (!scrollMode() && x > 0.75) turnPage(1);
+    else setImmersive(false);
+  } else if (gesture.word) {
+    setPos(Number(gesture.word.dataset.i), { turn: false });
+  }
 }
 
 function sentenceStart(i) {
@@ -485,7 +553,8 @@ function tick() {
     const t = (performance.now() - rampStart) / 5000;
     if (t < 1) speed *= 0.55 + 0.45 * t;
   }
-  const delay = (60000 / speed) * wordWeight(words[i], paraMark[i + 1] === 1, settings.punct);
+  let delay = (60000 / speed) * wordWeight(words[i], paraMark[i + 1] === 1, settings.punct);
+  if (reader.chapterMark[i + 1]) delay += CHAPTER_PAUSE_MS;
 
   timer = setTimeout(() => {
     if (i + 1 >= words.length) {
@@ -605,6 +674,7 @@ $('text').addEventListener('pointermove', onPointerMove);
 $('text').addEventListener('pointerup', onPointerUp);
 $('text').addEventListener('pointercancel', onPointerUp);
 $('text').addEventListener('contextmenu', (e) => e.preventDefault());
+$('text').addEventListener('scroll', onTextScroll, { passive: true });
 window.addEventListener('resize', relayout);
 $('speed').addEventListener('input', (e) => {
   settings.wpm = Number(e.target.value);

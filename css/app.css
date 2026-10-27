@@ -143,6 +143,12 @@ svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width:
   font-size: var(--text-size);
   line-height: 1.6;
 }
+.text.scroll { overflow-y: auto; -webkit-overflow-scrolling: touch; touch-action: pan-y; padding: 12px var(--pad) 40px; }
+.text.scroll .pages { max-width: 640px; margin: 0 auto; transition: none; }
+.nav-part {
+  display: block; width: 100%; padding: 14px 0; margin: 8px 0 20px; font-family: var(--sans);
+  font-size: 15px; color: var(--muted); text-align: center; border: 1px solid var(--line); border-radius: 12px;
+}
 .pages p { margin: 0 0 0.7em; hyphens: auto; -webkit-hyphens: auto; overflow-wrap: break-word; orphans: 2; widows: 2; }
 .pages span[data-i] { border-radius: 4px; cursor: pointer; }
 .pages .cur { background: var(--accent); color: var(--on-accent); box-shadow: 0 0 0 2px var(--accent); }
