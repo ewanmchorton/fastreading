@@ -1,5 +1,5 @@
 import { parseBook } from './parsers.js';
-import { tokenize, focusIndex, wordWeight, isSentenceEnd } from './text.js';
+import { tokenize, focusIndex, wordWeight } from './text.js';
 import * as db from './db.js';
 
 const $ = (id) => document.getElementById(id);
@@ -144,7 +144,12 @@ async function importFiles(files) {
 
 /* ---------- Reader ---------- */
 
-let reader = null; // { meta, chapters, words, paraStart, paraMark, sections, section }
+// The reading position is meta.pos: the word the flow starts from. It moves when the
+// flow runs, when a page is turned (to the page's first word), when the text is
+// scrolled (to the first visible word) and on a long press (to the pressed word).
+// Showing or hiding the controls never moves the text: they are drawn over it.
+
+let reader = null; // { meta, chapters, words, paraStart, paraMark, chapterMark, sections, section, spans, page, pageW, pageCount }
 let playing = false;
 let timer = 0;
 let rampStart = 0;
@@ -212,7 +217,7 @@ async function openBook(id) {
     const next = paraStart[c.para + 1];
     if (next !== undefined && next - at <= 8 && !chapterMark[next]) chapterMark[next] = 2;
   }
-  reader = { meta, chapters: content.chapters, words, paraStart, paraMark, chapterMark, section: -1 };
+  reader = { meta, chapters: content.chapters, words, paraStart, paraMark, chapterMark, section: -1, page: 0 };
   meta.total = words.length;
   meta.pos = Math.min(meta.pos || 0, words.length - 1);
   meta.openedAt = Date.now();
@@ -222,6 +227,7 @@ async function openBook(id) {
 
   $('library').hidden = true;
   $('reader').hidden = false;
+  setControls(true);
   await document.fonts?.ready;
   showPage();
   history.pushState({ reader: true }, '');
@@ -248,8 +254,14 @@ function schedulePersist() {
   saveTimer = setTimeout(persistPos, 1500);
 }
 
+function setReadPos(i) {
+  reader.meta.pos = Math.max(0, Math.min(i, reader.words.length - 1));
+  updateProgress();
+  schedulePersist();
+}
+
 /* Page view. Two layouts: "pages" puts the text in CSS columns, one column per screen,
-   turned by swipes; "scroll" is a plain scrolling column. */
+   turned by taps on the edges or swipes; "scroll" is a plain scrolling column. */
 
 const scrollMode = () => settings.layout === 'scroll';
 
@@ -267,7 +279,7 @@ function renderSection(k) {
   }
   if (scrollMode()) {
     const title = (j) => escapeHtml(chapters[sections[j].chapter].title);
-    if (k > 0) html = `<button class="nav-part" data-section="${k - 1}">↑ Назад: ${title(k - 1)}</button>` + html;
+    if (k > 0) html = `<button class="nav-part" data-section="${k - 1}">↑ ${title(k - 1)}</button>` + html;
     if (k + 1 < sections.length) html += `<button class="nav-part" data-section="${k + 1}">Дальше: ${title(k + 1)} ↓</button>`;
   }
   $('pages').innerHTML = html;
@@ -283,7 +295,6 @@ function layoutPages() {
   box.classList.toggle('scroll', scrollMode());
   if (scrollMode()) {
     for (const prop of ['width', 'height', 'marginLeft', 'columnWidth', 'columnGap', 'transform', 'transition']) pages.style[prop] = '';
-    reader.pageW = box.clientWidth;
     reader.pageCount = 1;
     $('page-no').textContent = '';
     return;
@@ -293,12 +304,16 @@ function layoutPages() {
   const side = (width - col) / 2;
   reader.pageW = width;
   pages.style.width = `${col}px`;
-  pages.style.height = `${box.clientHeight - 24}px`;
+  pages.style.height = `${box.clientHeight - parseFloat(getComputedStyle(box).paddingTop)}px`;
   pages.style.marginLeft = `${side}px`;
   pages.style.columnWidth = `${col}px`;
   pages.style.columnGap = `${side * 2}px`;
   const spans = reader.spans;
   reader.pageCount = spans.length ? pageOfSpan(spans[spans.length - 1]) + 1 : 1;
+}
+
+function spanOf(i) {
+  return reader.spans[i - reader.paraStart[reader.sections[reader.section].start]];
 }
 
 function pageOfSpan(el) {
@@ -320,15 +335,15 @@ function firstWordOnPage(n) {
 
 function showPageNo(n, animate = true) {
   reader.page = n;
-  if (scrollMode()) return;
   const pages = $('pages');
   pages.style.transition = animate ? '' : 'none';
   pages.style.transform = `translateX(${-n * reader.pageW}px)`;
   $('page-no').textContent = `${n + 1} / ${reader.pageCount}`;
 }
 
-// Turn the page; past the first or last page, the previous or next part of the book loads.
+// Turns the page; past the first or last page, the previous or next part of the book loads.
 function turnPage(dir) {
+  if (scrollMode()) return;
   let n = reader.page + dir;
   if (n < 0) {
     if (reader.section === 0) return showPageNo(0);
@@ -343,99 +358,81 @@ function turnPage(dir) {
   } else {
     showPageNo(n);
   }
-  setPos(firstWordOnPage(n), { turn: false });
+  setReadPos(firstWordOnPage(n));
 }
 
-function highlight() {
-  $('pages').querySelector('.cur')?.classList.remove('cur');
-  reader.spans[reader.meta.pos - reader.paraStart[reader.sections[reader.section].start]]?.classList.add('cur');
-}
-
-// Moves the reading position; with `turn`, also turns to the page that holds it.
-function setPos(i, { turn = true } = {}) {
+// Shows word i: the page that holds it, or, when scrolling, its line near the top.
+function goTo(i, { force = false } = {}) {
   i = Math.max(0, Math.min(i, reader.words.length - 1));
-  reader.meta.pos = i;
   const k = sectionOf(i);
-  if (k !== reader.section) renderSection(k);
-  highlight();
-  if (turn) showCurrent();
-  updateProgress();
-  schedulePersist();
-}
-
-// Brings the current word into view: its page, or the middle of the screen when scrolling.
-function showCurrent() {
-  const cur = $('pages').querySelector('.cur');
-  if (!cur) return;
+  if (force || k !== reader.section) renderSection(k);
+  const el = spanOf(i);
   if (scrollMode()) {
-    reader.ignoreScrollUntil = performance.now() + 300;
-    cur.scrollIntoView({ block: 'center' });
+    const box = $('text');
+    reader.ignoreScrollUntil = performance.now() + 400;
+    box.scrollTop += el.getBoundingClientRect().top - box.getBoundingClientRect().top - box.clientHeight / 4;
   } else {
-    showPageNo(pageOfSpan(cur), false);
+    showPageNo(pageOfSpan(el), false);
   }
-}
-
-// Full-screen text: the bars hide while leafing or scrolling, a tap brings them back.
-function setImmersive(on) {
-  if ($('reader').classList.contains('immersive') === on) return;
-  $('reader').classList.toggle('immersive', on);
-  if (scrollMode()) return;
-  layoutPages();
-  showCurrent();
-}
-
-function relayout() {
-  if (!reader || playing || $('page').hidden) return;
-  reader.section = -1;
-  setPos(reader.meta.pos);
-}
-
-// In scroll mode, scrolling hides the bars, and once the highlighted word leaves
-// the screen the reading position follows the first visible line.
-function onTextScroll() {
-  if (!reader || playing || !scrollMode() || performance.now() < (reader.ignoreScrollUntil || 0)) return;
-  setImmersive(true);
-  clearTimeout(onTextScroll.t);
-  onTextScroll.t = setTimeout(() => {
-    const box = $('text').getBoundingClientRect();
-    const cur = $('pages').querySelector('.cur');
-    if (cur) {
-      const r = cur.getBoundingClientRect();
-      if (r.bottom > box.top && r.top < box.bottom) return;
-    }
-    const first = [...reader.spans].find((el) => el.getBoundingClientRect().top >= box.top);
-    if (first) setPos(Number(first.dataset.i), { turn: false });
-  }, 250);
+  setReadPos(i);
 }
 
 function showPage() {
   $('flow').hidden = true;
   $('page').hidden = false;
-  $('reader').classList.remove('immersive');
-  reader.section = -1;
-  setPos(reader.meta.pos);
+  goTo(reader.meta.pos, { force: true });
+}
+
+// Re-lays the text out (new size, font or layout) and keeps the reading position in view.
+function relayout() {
+  if (!reader || playing || $('page').hidden) return;
+  goTo(reader.meta.pos, { force: true });
+}
+
+// The bars at the top and bottom are drawn over the text; toggling them moves nothing.
+function setControls(on) {
+  $('reader').classList.toggle('controls', on);
+}
+
+// When scrolling, the reading position follows the first line on screen.
+function onTextScroll() {
+  if (!reader || playing || !scrollMode() || performance.now() < (reader.ignoreScrollUntil || 0)) return;
+  setControls(false);
+  clearTimeout(onTextScroll.t);
+  onTextScroll.t = setTimeout(() => {
+    const top = $('text').getBoundingClientRect().top;
+    const first = [...reader.spans].find((el) => el.getBoundingClientRect().top >= top);
+    if (first) setReadPos(Number(first.dataset.i));
+  }, 200);
 }
 
 function updateProgress() {
   const { pos, total } = reader.meta;
   const pct = `${Math.floor((pos / total) * 100)}%`;
   const width = `${(pos / total) * 100}%`;
-  const left = `осталось ${formatLeft(total - pos)}`;
   $('page-pct').textContent = pct;
   $('page-fill').style.width = width;
-  $('page-left').textContent = left;
+  $('page-left').textContent = `осталось ${formatLeft(total - pos)}`;
   $('page-foot-pct').textContent = pct;
   $('flow-pct').textContent = pct;
   $('flow-fill').style.width = width;
   $('flow-left').textContent = formatLeft(total - pos);
 }
 
-/* Gestures on the page: swipe turns, tap shows the bars or picks a word, long press starts the flow */
+/* Touch on the text.
+   Pages: a tap on the left or right third turns the page, in the middle shows or hides
+   the controls; a swipe turns the page. Scroll: a tap shows or hides the controls.
+   Both: holding a finger on a word starts the flow from that word. */
 
-const gesture = { id: null, x: 0, y: 0, dx: 0, drag: false, long: false, timer: 0, word: null, nav: null };
+const LONG_PRESS_MS = 500;
+// The finger that started the flow by a long press can end with a click on the flow
+// screen; that click must not pause it. A real tap on the flow starts with its own
+// pointerdown there, which clears the flag.
+let flowClickFromLongPress = false;
+const gesture = { id: null, x: 0, y: 0, dx: 0, moved: false, drag: false, long: false, timer: 0, word: null, nav: null };
 
-// Forgets a gesture whose end never arrives: iOS drops pointerup when a long press
-// hides the page to start the flow, which used to leave every later swipe ignored.
+// iOS never sends pointerup when a long press hides the page to start the flow,
+// so a gesture is also forgotten on the next touch and whenever the flow starts.
 function resetGesture() {
   clearTimeout(gesture.timer);
   gesture.id = null;
@@ -444,17 +441,18 @@ function resetGesture() {
 function onPointerDown(e) {
   if (!e.isPrimary || !reader) return;
   resetGesture();
-  Object.assign(gesture, { id: e.pointerId, x: e.clientX, y: e.clientY, dx: 0, drag: false, long: false });
-  gesture.word = e.target.closest('[data-i]');
-  gesture.nav = e.target.closest('[data-section]');
+  Object.assign(gesture, {
+    id: e.pointerId, x: e.clientX, y: e.clientY, dx: 0, moved: false, drag: false, long: false,
+    word: e.target.closest('[data-i]'), nav: e.target.closest('[data-section]'),
+  });
   if (!scrollMode()) $('text').setPointerCapture(e.pointerId);
-  clearTimeout(gesture.timer);
   if (gesture.word) {
     gesture.timer = setTimeout(() => {
       gesture.long = true;
-      setPos(Number(gesture.word.dataset.i), { turn: false });
+      flowClickFromLongPress = true;
+      setReadPos(Number(gesture.word.dataset.i));
       play();
-    }, 550);
+    }, LONG_PRESS_MS);
   }
 }
 
@@ -462,8 +460,11 @@ function onPointerMove(e) {
   if (e.pointerId !== gesture.id) return;
   const dx = e.clientX - gesture.x;
   const dy = e.clientY - gesture.y;
-  if (Math.abs(dx) > 8 || Math.abs(dy) > 8) clearTimeout(gesture.timer);
-  if (!gesture.drag && !scrollMode() && Math.abs(dx) > 12 && Math.abs(dx) > Math.abs(dy)) gesture.drag = true;
+  if (!gesture.moved && Math.hypot(dx, dy) > 10) {
+    gesture.moved = true;
+    clearTimeout(gesture.timer);
+    gesture.drag = !scrollMode() && Math.abs(dx) > Math.abs(dy);
+  }
   if (gesture.drag) {
     gesture.dx = dx;
     const pages = $('pages');
@@ -474,54 +475,34 @@ function onPointerMove(e) {
 
 function onPointerUp(e) {
   if (e.pointerId !== gesture.id) return;
-  gesture.id = null;
-  clearTimeout(gesture.timer);
-  if (gesture.long || e.type === 'pointercancel') {
-    if (reader && !playing) showPageNo(reader.page);
+  resetGesture();
+  if (gesture.long || !reader || playing) return;
+  if (e.type === 'pointercancel') {
+    if (gesture.drag) showPageNo(reader.page);
     return;
   }
   if (gesture.drag) {
-    if (Math.abs(gesture.dx) > 50) {
-      const dir = gesture.dx < 0 ? 1 : -1;
-      setImmersive(true);
-      turnPage(dir);
-    } else {
-      showPageNo(reader.page);
-    }
+    setControls(false);
+    if (Math.abs(gesture.dx) > 50) turnPage(gesture.dx < 0 ? 1 : -1);
+    else showPageNo(reader.page);
     return;
   }
-  // A tap. In full screen, the side edges of a page turn it and the middle brings the bars back.
+  if (gesture.moved) return;
+  // A tap.
   if (gesture.nav) {
-    const s = reader.sections[Number(gesture.nav.dataset.section)];
-    setPos(reader.paraStart[s.start]);
-    $('text').scrollTop = 0;
-  } else if ($('reader').classList.contains('immersive')) {
-    const x = e.clientX / window.innerWidth;
-    if (!scrollMode() && x < 0.25) turnPage(-1);
-    else if (!scrollMode() && x > 0.75) turnPage(1);
-    else setImmersive(false);
-  } else if (gesture.word) {
-    setPos(Number(gesture.word.dataset.i), { turn: false });
+    goTo(reader.paraStart[reader.sections[Number(gesture.nav.dataset.section)].start]);
+    return;
   }
-}
-
-function sentenceStart(i) {
-  const { words, paraMark } = reader;
-  while (i > 0 && !paraMark[i] && !isSentenceEnd(words[i - 1])) i--;
-  return i;
-}
-
-function prevSentence() {
-  let s = sentenceStart(reader.meta.pos);
-  if (reader.meta.pos - s < 2 && s > 0) s = sentenceStart(s - 1);
-  setPos(s);
-}
-
-function nextSentence() {
-  const { words, paraMark } = reader;
-  let j = reader.meta.pos;
-  while (j < words.length - 1 && !isSentenceEnd(words[j]) && !paraMark[j + 1]) j++;
-  setPos(j + 1);
+  const x = (e.clientX - $('text').getBoundingClientRect().left) / $('text').clientWidth;
+  if (!scrollMode() && x < 0.3) {
+    setControls(false);
+    turnPage(-1);
+  } else if (!scrollMode() && x > 0.7) {
+    setControls(false);
+    turnPage(1);
+  } else {
+    setControls(!$('reader').classList.contains('controls'));
+  }
 }
 
 /* Flow */
@@ -604,6 +585,7 @@ function pause() {
   wakeLock?.release().catch(() => {});
   wakeLock = null;
   persistPos();
+  setControls(false);
   showPage();
 }
 
@@ -640,7 +622,7 @@ document.addEventListener('click', (e) => {
   else if (t.hasAttribute('data-close-sheet')) closeSheets();
   else if (t.dataset.chapter !== undefined) {
     closeSheets();
-    setPos(reader.paraStart[reader.chapters[Number(t.dataset.chapter)].para]);
+    goTo(reader.paraStart[reader.chapters[Number(t.dataset.chapter)].para]);
   } else if (t.dataset.value !== undefined) {
     const key = t.closest('[data-setting]').dataset.setting;
     settings[key] = t.dataset.value;
@@ -674,10 +656,11 @@ $('backdrop').addEventListener('click', closeSheets);
 $('back').addEventListener('click', () => history.back());
 $('chapter-btn').addEventListener('click', () => openSheet('chapters'));
 $('play').addEventListener('click', play);
-$('prev').addEventListener('click', prevSentence);
-$('next').addEventListener('click', nextSentence);
-// The click that ends a long press can land on the flow screen: ignore it.
-$('flow').addEventListener('click', () => { if (performance.now() - playStartedAt > 400) pause(); });
+$('flow').addEventListener('pointerdown', () => { flowClickFromLongPress = false; });
+$('flow').addEventListener('click', () => {
+  if (flowClickFromLongPress) flowClickFromLongPress = false;
+  else pause();
+});
 $('text').addEventListener('pointerdown', onPointerDown);
 $('text').addEventListener('pointermove', onPointerMove);
 $('text').addEventListener('pointerup', onPointerUp);
@@ -714,8 +697,8 @@ document.addEventListener('keydown', (e) => {
     e.preventDefault();
     if (playing) pause(); else play();
   } else if (e.key === 'Escape') pause();
-  else if (!playing && e.key === 'ArrowLeft') { setImmersive(true); turnPage(-1); }
-  else if (!playing && e.key === 'ArrowRight') { setImmersive(true); turnPage(1); }
+  else if (!playing && e.key === 'ArrowLeft') turnPage(-1);
+  else if (!playing && e.key === 'ArrowRight') turnPage(1);
 });
 
 /* ---------- Start ---------- */

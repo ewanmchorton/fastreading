@@ -56,9 +56,14 @@
 <!-- Reader -->
 <div id="reader" class="screen reader" hidden>
 
-  <!-- Page mode: the text as a page; this is also the pause state of the flow -->
+  <!-- Page mode: the text as pages (or a scroll); this is also the pause state of the flow.
+       The bars are drawn over the text and never change its layout. -->
   <div id="page" class="page">
-    <header class="bar">
+    <div class="page-head" id="page-head"></div>
+    <article id="text" class="text"><div id="pages" class="pages"></div></article>
+    <div class="page-foot"><span id="page-no"></span><span id="page-foot-pct"></span></div>
+
+    <header class="bar overlay top-bar">
       <button class="icon-btn" id="back" aria-label="В библиотеку">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>
       </button>
@@ -71,11 +76,7 @@
       </button>
     </header>
 
-    <div class="page-head" id="page-head"></div>
-    <article id="text" class="text"><div id="pages" class="pages"></div></article>
-    <div class="page-foot"><span id="page-no"></span><span>тап — меню · удержи слово — поток</span><span id="page-foot-pct"></span></div>
-
-    <footer class="panel">
+    <footer class="panel overlay">
       <div class="speed">
         <div class="speed-head">
           <label for="speed">Скорость потока</label>
@@ -84,19 +85,14 @@
         <input type="range" id="speed" min="100" max="1000" step="25" value="300">
       </div>
       <div class="controls">
-        <button class="round" id="prev" aria-label="Предыдущее предложение">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 6l-6 6 6 6M19 6l-6 6 6 6"/></svg>
-        </button>
         <button class="round play" id="play" aria-label="Запустить поток">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
         </button>
-        <button class="round" id="next" aria-label="Следующее предложение">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 6l6 6-6 6M5 6l6 6-6 6"/></svg>
-        </button>
       </div>
+      <p class="panel-hint">Удержи палец на слове — поток начнётся с него</p>
       <div class="progress">
         <div class="track"><div class="fill" id="page-fill"></div></div>
-        <div class="progress-meta"><span id="page-pct">0%</span><span>тап по слову — начать с него</span><span id="page-left"></span></div>
+        <div class="progress-meta"><span id="page-pct">0%</span><span id="page-left"></span></div>
       </div>
     </footer>
   </div>
