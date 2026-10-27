@@ -434,8 +434,16 @@ function updateProgress() {
 
 const gesture = { id: null, x: 0, y: 0, dx: 0, drag: false, long: false, timer: 0, word: null, nav: null };
 
+// Forgets a gesture whose end never arrives: iOS drops pointerup when a long press
+// hides the page to start the flow, which used to leave every later swipe ignored.
+function resetGesture() {
+  clearTimeout(gesture.timer);
+  gesture.id = null;
+}
+
 function onPointerDown(e) {
-  if (gesture.id !== null || !reader) return;
+  if (!e.isPrimary || !reader) return;
+  resetGesture();
   Object.assign(gesture, { id: e.pointerId, x: e.clientX, y: e.clientY, dx: 0, drag: false, long: false });
   gesture.word = e.target.closest('[data-i]');
   gesture.nav = e.target.closest('[data-section]');
@@ -576,6 +584,7 @@ function tick() {
 
 async function play() {
   if (playing || !reader) return;
+  resetGesture();
   playing = true;
   if (Date.now() - lastPausedAt > 2 * 60 * 1000) playedMs = 0; // a long pause counts as rest
   rampStart = playStartedAt = performance.now();
@@ -673,6 +682,7 @@ $('text').addEventListener('pointerdown', onPointerDown);
 $('text').addEventListener('pointermove', onPointerMove);
 $('text').addEventListener('pointerup', onPointerUp);
 $('text').addEventListener('pointercancel', onPointerUp);
+$('text').addEventListener('lostpointercapture', (e) => { if (e.pointerId === gesture.id) resetGesture(); });
 $('text').addEventListener('contextmenu', (e) => e.preventDefault());
 $('text').addEventListener('scroll', onTextScroll, { passive: true });
 window.addEventListener('resize', relayout);
