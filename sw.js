@@ -1,6 +1,6 @@
-// Offline support: files are served from the cache and refreshed in the background
-// (stale-while-revalidate), so a new version shows up on the next launch.
-const VERSION = 'fr-v1';
+// Offline support: online, files always come from the network (so an update shows up
+// right away and old and new files never mix); offline, from the cache.
+const VERSION = 'fr-v2';
 const SHELL = [
   './',
   'index.html',
@@ -45,17 +45,16 @@ self.addEventListener('fetch', (e) => {
   const url = new URL(e.request.url);
   if (e.request.method !== 'GET' || url.origin !== location.origin) return;
   e.respondWith(caches.open(VERSION).then(async (cache) => {
-    const hit = await cache.match(e.request, { ignoreSearch: true });
-    const fresh = fetch(e.request).then((res) => {
-      if (res.ok && (hit || SHELL_PATHS.has(url.pathname) || LAZY.some((p) => url.pathname.includes(p)))) {
+    try {
+      const res = await fetch(e.request, { cache: 'no-cache' });
+      if (res.ok && (SHELL_PATHS.has(url.pathname) || LAZY.some((p) => url.pathname.includes(p)))) {
         cache.put(e.request, res.clone());
       }
       return res;
-    });
-    if (hit) {
-      e.waitUntil(fresh.catch(() => {}));
-      return hit;
+    } catch (err) {
+      const hit = await cache.match(e.request, { ignoreSearch: true });
+      if (hit) return hit;
+      throw err;
     }
-    return fresh;
   }));
 });
